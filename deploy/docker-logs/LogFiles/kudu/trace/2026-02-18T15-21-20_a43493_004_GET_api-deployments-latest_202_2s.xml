@@ -1,0 +1,9 @@
+<step title="Incoming Request" date="2026-02-18T15:21:20.944" instance="a43493" url="/api/deployments/latest" method="GET" type="request" pid="768,1,15" Accept="*/*" Host="llm-orchestration-app-h2ejhxf7bddmh5gv.scm.centralindia-01.azurewebsites.net" User-Agent="AZURECLI/2.79.0 (MSI)" Accept-Encoding="gzip, deflate" Authorization="Bas..." x-ms-client-request-id="6e57769d-0cdd-11f1-838d-010101010000" X-ARR-LOG-ID="6e57769d-0cdd-11f1-838d-010101010000" CLIENT-IP="167.220.238.4:44755" X-SITE-DEPLOYMENT-ID="llm-orchestration-app" WAS-DEFAULT-HOSTNAME="llm-orchestration-app-h2ejhxf7bddmh5gv.scm.centralindia-01.azurewebsites.net" X-Forwarded-Proto="https" X-AppService-Proto="https" X-Forwarded-TlsVersion="1.3" X-WAWS-Unencoded-URL="/api/deployments/latest" X-Client-IP="167.220.238.4" X-Client-Port="44755" >
+  <step title="Cleanup Xml Logs" date="2026-02-18T15:21:20.953" /><!-- duration: 26ms -->
+  <step title="DeploymentService.GetResult" date="2026-02-18T15:21:21.079" >
+    <step title="DeploymentService.GetLatestDeployment" date="2026-02-18T15:21:21.087" >
+      <step title="DeploymentManager.GetResults" date="2026-02-18T15:21:21.118" /><!-- duration: 1275ms -->
+    </step><!-- duration: 1315ms -->
+  </step><!-- duration: 1328ms -->
+  <step title="Outgoing response" date="2026-02-18T15:21:22.485" type="response" statusCode="202" statusText="Accepted" /><!-- duration: 10ms -->
+</step><!-- duration: 1556ms -->

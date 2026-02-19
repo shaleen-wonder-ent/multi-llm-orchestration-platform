@@ -1,0 +1,7 @@
+# requirements.txt
+agent-framework-azure-ai==1.0.0b260107
+agent-framework-core==1.0.0b260107
+fastapi
+uvicorn
+debugpy
+agent-dev-cli --pre

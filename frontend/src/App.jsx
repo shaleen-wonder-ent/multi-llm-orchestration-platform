@@ -27,7 +27,7 @@ function App() {
   };
 
   return (
-    <div style={{ maxWidth: 600, margin: "40px auto", padding: 24, borderRadius: 8, boxShadow: "0 2px 8px #ddd" }}>
+    <div style={{ maxWidth: 1100, margin: "40px auto", padding: 24, borderRadius: 8, boxShadow: "0 2px 8px #ddd", color: "#213547", background: "#fff" }}>
       <h2>Multi-LLM Orchestration App</h2>
       <form onSubmit={handleSubmit} style={{ marginBottom: 24 }}>
         <input
@@ -60,12 +60,23 @@ function App() {
               }}>
                 <strong style={{ fontSize: 16 }}>{model.toUpperCase()}</strong>
                 <div style={{ fontSize: 13, margin: "4px 0 8px 0" }}>
-                  Grade: <b>{responses.grades[model]}</b> {responses.best === model && <span style={{ color: "#faad14" }}>(Best)</span>}
+                  Grade: <b>{responses.grades[model]}/10</b> {responses.best === model && <span style={{ color: "#faad14" }}>(Best)</span>}
                 </div>
+                {responses.reasons && responses.reasons[model] && (
+                  <div style={{ fontSize: 12, color: "#555", background: "#f5f5f5", padding: "6px 8px", borderRadius: 4, marginBottom: 8, fontStyle: "italic" }}>
+                    Judge: {responses.reasons[model]}
+                  </div>
+                )}
                 {formatLLMAnswer(ans)}
               </div>
             ))}
           </div>
+          {responses.judge_summary && (
+            <div style={{ background: "#f0f9ff", border: "1px solid #91d5ff", borderRadius: 4, padding: "10px 14px", marginBottom: 12, color: "#213547" }}>
+              <strong style={{ fontSize: 13 }}>Judge ({responses.judge || "GPT-5.2"}):</strong>
+              <span style={{ fontSize: 13, marginLeft: 6 }}>{responses.judge_summary}</span>
+            </div>
+          )}
           <div style={{ fontWeight: 500, color: "#52c41a" }}>
             Best LLM: {responses.best.toUpperCase()}
           </div>

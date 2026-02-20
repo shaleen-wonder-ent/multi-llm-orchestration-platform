@@ -143,27 +143,95 @@ def query_llm(model_name: str, prompt: str) -> str:
     else:
         return f"Model {model_name} not supported."
 
-def triage_responses(responses: dict) -> str:
-    logger.info(f"Starting triage with responses: {responses}")
-    # Simple grading - count tokens as a basic quality metric
-    grades = {}
-    for model, response in responses.items():
-        logger.info(f"Grading model {model} with response: '{response}'")
-        if "error" in response.lower():
-            grades[model] = 1
-            logger.info(f"Model {model} has error, grade: 1")
-        else:
-            # Basic scoring based on response length and content quality
-            length_score = min(len(response) / 100, 5)  # Up to 5 points for length
-            content_score = 3 if any(word in response.lower() for word in ['because', 'therefore', 'however', 'specifically']) else 1
-            grades[model] = min(length_score + content_score, 10)
-            logger.info(f"Model {model} scores - length: {length_score}, content: {content_score}, total: {grades[model]}")
+import json
+
+def triage_responses(prompt: str, responses: dict) -> tuple:
+    """Use GPT-5.2 as a judge to evaluate and grade all model responses."""
+    logger.info("Starting LLM-as-Judge evaluation")
     
-    logger.info(f"All grades: {grades}")
-    # Return model with highest grade
-    best_model = max(grades.keys(), key=lambda k: grades[k])
-    logger.info(f"Best model selected: {best_model} with grade: {grades[best_model]}")
-    return best_model, grades
+    # Build the judging prompt
+    responses_text = ""
+    for model, response in responses.items():
+        # Truncate very long responses for the judge
+        truncated = response[:2000] if len(response) > 2000 else response
+        responses_text += f"\n--- {model} ---\n{truncated}\n"
+    
+    judge_prompt = f"""You are an expert judge evaluating AI model responses. 
+The user asked: "{prompt}"
+
+Here are the responses from different models:
+{responses_text}
+
+Evaluate each response on a scale of 1-10 based on:
+- Accuracy and correctness
+- Completeness and depth
+- Clarity and readability
+- Relevance to the question
+
+Return your evaluation as valid JSON only (no markdown, no code fences), in this exact format:
+{{
+  "evaluations": {{
+    "<model_name>": {{
+      "grade": <number 1-10>,
+      "reason": "<1-2 sentence explanation of the grade>"
+    }}
+  }},
+  "best": "<model_name of the best response>",
+  "summary": "<1 sentence overall summary of why the best was chosen>"
+}}"""
+
+    try:
+        endpoint = os.getenv("GPT52_ENDPOINT")
+        key = os.getenv("GPT52_KEY")
+        deployment = os.getenv("GPT52_DEPLOYMENT", "gpt-5.2-chat")
+        api_version = os.getenv("GPT52_API_VERSION", "2025-04-01-preview")
+        
+        client = AzureOpenAI(
+            api_version=api_version,
+            azure_endpoint=endpoint,
+            api_key=key,
+        )
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": judge_prompt}],
+            max_completion_tokens=1024,
+            model=deployment
+        )
+        content = response.choices[0].message.content
+        if content:
+            content = content.strip()
+            # Remove markdown code fences if present
+            if content.startswith("```"):
+                content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                content = content.rsplit("```", 1)[0]
+                content = content.strip()
+            
+            judge_result = json.loads(content)
+            evaluations = judge_result.get("evaluations", {})
+            grades = {model: eval_data["grade"] for model, eval_data in evaluations.items()}
+            reasons = {model: eval_data["reason"] for model, eval_data in evaluations.items()}
+            best_model = judge_result.get("best", max(grades, key=lambda k: grades[k]))
+            summary = judge_result.get("summary", "")
+            
+            logger.info(f"Judge result: grades={grades}, best={best_model}")
+            return best_model, grades, reasons, summary
+    except Exception as e:
+        logger.error(f"LLM Judge error: {type(e).__name__}: {str(e)}")
+    
+    # Fallback to simple heuristic if judge fails
+    logger.warning("Falling back to heuristic grading")
+    grades = {}
+    reasons = {}
+    for model, resp in responses.items():
+        if "error" in resp.lower():
+            grades[model] = 1
+            reasons[model] = "Response contains an error."
+        else:
+            length_score = min(len(resp) / 100, 5)
+            content_score = 3 if any(w in resp.lower() for w in ['because', 'therefore', 'however', 'specifically']) else 1
+            grades[model] = min(length_score + content_score, 10)
+            reasons[model] = "Scored by heuristic (LLM judge unavailable)."
+    best_model = max(grades, key=lambda k: grades[k])
+    return best_model, grades, reasons, "Graded by heuristic fallback."
 
 @app.post("/ask")
 async def ask(request: AskRequest):
@@ -183,16 +251,19 @@ async def ask(request: AskRequest):
         responses[model] = response
         logger.info(f"Model {model} response length: {len(response)}")
     
-    logger.info(f"All responses collected: {responses}")
-    best_model, grades = triage_responses(responses)
+    logger.info(f"All responses collected")
+    best_model, grades, reasons, judge_summary = triage_responses(prompt, responses)
     
     result = {
         "prompt": prompt,
-        "answers": responses,  # Frontend expects 'answers' 
-        "best": best_model,   # Frontend expects 'best'
-        "grades": grades,     # Frontend expects 'grades'
-        "responses": responses,  # Keep for backward compatibility
-        "best_answer": responses[best_model]  # Keep for backward compatibility
+        "answers": responses,
+        "best": best_model,
+        "grades": grades,
+        "reasons": reasons,
+        "judge_summary": judge_summary,
+        "judge": "gpt-5.2-chat",
+        "responses": responses,
+        "best_answer": responses[best_model]
     }
     
     logger.info(f"Final result being returned: {result}")

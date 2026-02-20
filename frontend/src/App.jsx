@@ -6,6 +6,8 @@ function App() {
   const [prompt, setPrompt] = useState("");
   const [answers, setAnswers] = useState({});
   const [judgeData, setJudgeData] = useState(null);
+  const [judgeModel, setJudgeModel] = useState(null);
+  const [contestants, setContestants] = useState([]);
   const [loading, setLoading] = useState(false);
   const [pendingModels, setPendingModels] = useState([]);
   const [error, setError] = useState("");
@@ -16,6 +18,8 @@ function App() {
     setError("");
     setAnswers({});
     setJudgeData(null);
+    setJudgeModel(null);
+    setContestants([]);
     setPendingModels([...ALL_MODELS]);
 
     try {
@@ -35,7 +39,6 @@ function App() {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        // Parse SSE events from buffer
         const lines = buffer.split("\n");
         buffer = "";
         let eventType = "";
@@ -44,7 +47,11 @@ function App() {
             eventType = line.slice(7).trim();
           } else if (line.startsWith("data: ")) {
             const data = JSON.parse(line.slice(6));
-            if (eventType === "model_result") {
+            if (eventType === "judge_selected") {
+              setJudgeModel(data.judge);
+              setContestants(data.contestants);
+              setPendingModels(data.contestants);
+            } else if (eventType === "model_result") {
               setAnswers(prev => ({ ...prev, [data.model]: { answer: data.answer, elapsed: data.elapsed } }));
               setPendingModels(prev => prev.filter(m => m !== data.model));
             } else if (eventType === "judge_result") {
@@ -65,6 +72,7 @@ function App() {
   };
 
   const hasAnswers = Object.keys(answers).length > 0;
+  const displayModels = contestants.length > 0 ? contestants : ALL_MODELS;
 
   return (
     <div style={{ maxWidth: 1100, margin: "40px auto", padding: 24, borderRadius: 8, boxShadow: "0 2px 8px #ddd", color: "#213547", background: "#fff" }}>
@@ -86,9 +94,14 @@ function App() {
       {error && <div style={{ color: "red", marginBottom: 16 }}>{error}</div>}
       {(hasAnswers || loading) && (
         <div>
-          <h3>LLM Answers</h3>
+          {judgeModel && (
+            <div style={{ fontSize: 13, color: "#722ed1", marginBottom: 12, background: "#f9f0ff", border: "1px solid #d3adf7", borderRadius: 4, padding: "8px 12px" }}>
+              <strong>Judge this round:</strong> {judgeModel.toUpperCase()} &nbsp;|&nbsp; <strong>Contestants:</strong> {displayModels.map(m => m.toUpperCase()).join(" vs ")}
+            </div>
+          )}
+          <h3>Contestant Answers</h3>
           <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
-            {ALL_MODELS.map(model => {
+            {displayModels.map(model => {
               const data = answers[model];
               const isPending = pendingModels.includes(model);
               const isBest = judgeData && judgeData.best === model;
@@ -130,12 +143,14 @@ function App() {
               );
             })}
           </div>
-          {loading && !judgeData && Object.keys(answers).length === ALL_MODELS.length && (
-            <div style={{ fontSize: 13, color: "#1890ff", marginBottom: 12 }}>Evaluating responses with GPT-5.2 judge...</div>
+          {loading && !judgeData && Object.keys(answers).length === displayModels.length && (
+            <div style={{ fontSize: 13, color: "#1890ff", marginBottom: 12 }}>
+              {judgeModel ? `${judgeModel.toUpperCase()} is evaluating responses...` : "Evaluating responses..."}
+            </div>
           )}
           {judgeData && judgeData.judge_summary && (
             <div style={{ background: "#f0f9ff", border: "1px solid #91d5ff", borderRadius: 4, padding: "10px 14px", marginBottom: 12, color: "#213547" }}>
-              <strong style={{ fontSize: 13 }}>Judge ({judgeData.judge || "GPT-5.2"}):</strong>
+              <strong style={{ fontSize: 13 }}>Judge ({judgeData.judge}):</strong>
               <span style={{ fontSize: 13, marginLeft: 6 }}>{judgeData.judge_summary}</span>
               <span style={{ fontSize: 11, color: "#888", marginLeft: 8 }}>({judgeData.judge_elapsed}s)</span>
             </div>

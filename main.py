@@ -6,6 +6,7 @@ import traceback
 import asyncio
 import json
 import time
+import random
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
@@ -107,16 +108,15 @@ def query_llm(model_name: str, prompt: str) -> str:
         logger.error(f"{model_name} API error: {type(e).__name__}: {str(e)}")
         return f"{model_name} API error: {type(e).__name__}: {str(e)}"
 
-import json
+ALL_MODELS = ["gpt-5.2-chat", "phi-4-mini-reasoning", "deepseek-v3.2"]
 
-def triage_responses(prompt: str, responses: dict) -> tuple:
-    """Use GPT-5.2 as a judge to evaluate and grade all model responses."""
-    logger.info("Starting LLM-as-Judge evaluation")
+def triage_responses(prompt: str, responses: dict, judge_model: str) -> tuple:
+    """Use a randomly selected LLM as judge to evaluate contestant responses."""
+    logger.info(f"Starting LLM-as-Judge evaluation (judge: {judge_model})")
     
     # Build the judging prompt
     responses_text = ""
     for model, response in responses.items():
-        # Truncate very long responses for the judge
         truncated = response[:2000] if len(response) > 2000 else response
         responses_text += f"\n--- {model} ---\n{truncated}\n"
     
@@ -145,25 +145,18 @@ Return your evaluation as valid JSON only (no markdown, no code fences), in this
 }}"""
 
     try:
-        endpoint = os.getenv("GPT52_ENDPOINT")
-        key = os.getenv("GPT52_KEY")
-        deployment = os.getenv("GPT52_DEPLOYMENT", "gpt-5.2-chat")
-        api_version = os.getenv("GPT52_API_VERSION", "2025-04-01-preview")
-        
-        client = AzureOpenAI(
-            api_version=api_version,
-            azure_endpoint=endpoint,
-            api_key=key,
-        )
-        response = client.chat.completions.create(
-            messages=[{"role": "user", "content": judge_prompt}],
-            max_completion_tokens=1024,
-            model=deployment
-        )
+        client = _get_client(judge_model)
+        config = MODEL_CONFIG[judge_model]
+        deployment = os.getenv(config["deployment"], config["default"])
+        kwargs = {
+            "messages": [{"role": "user", "content": judge_prompt}],
+            "model": deployment,
+            config["max_tokens_key"]: config["max_tokens"],
+        }
+        response = client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content
         if content:
             content = content.strip()
-            # Remove markdown code fences if present
             if content.startswith("```"):
                 content = content.split("\n", 1)[1] if "\n" in content else content[3:]
                 content = content.rsplit("```", 1)[0]
@@ -176,10 +169,10 @@ Return your evaluation as valid JSON only (no markdown, no code fences), in this
             best_model = judge_result.get("best", max(grades, key=lambda k: grades[k]))
             summary = judge_result.get("summary", "")
             
-            logger.info(f"Judge result: grades={grades}, best={best_model}")
+            logger.info(f"Judge ({judge_model}) result: grades={grades}, best={best_model}")
             return best_model, grades, reasons, summary
     except Exception as e:
-        logger.error(f"LLM Judge error: {type(e).__name__}: {str(e)}")
+        logger.error(f"LLM Judge ({judge_model}) error: {type(e).__name__}: {str(e)}")
     
     # Fallback to simple heuristic if judge fails
     logger.warning("Falling back to heuristic grading")
@@ -206,21 +199,22 @@ async def ask(request: AskRequest):
     
     logger.info(f"Processing request with prompt: {prompt[:100]}..." if len(prompt) > 100 else f"Processing request with prompt: {prompt}")
     
-    models = ["gpt-5.2-chat", "phi-4-mini-reasoning", "deepseek-v3.2"]
+    # Randomly pick a judge and exclude it from contestants
+    judge_model = random.choice(ALL_MODELS)
+    contestants = [m for m in ALL_MODELS if m != judge_model]
+    logger.info(f"Judge: {judge_model}, Contestants: {contestants}")
     
-    # Call all 3 models in parallel
-    logger.info("Calling all models in parallel")
+    # Call contestants in parallel
     results = await asyncio.gather(
-        asyncio.to_thread(query_llm, models[0], prompt),
-        asyncio.to_thread(query_llm, models[1], prompt),
-        asyncio.to_thread(query_llm, models[2], prompt),
+        asyncio.to_thread(query_llm, contestants[0], prompt),
+        asyncio.to_thread(query_llm, contestants[1], prompt),
     )
-    responses = dict(zip(models, results))
-    for model in models:
+    responses = dict(zip(contestants, results))
+    for model in contestants:
         logger.info(f"Model {model} response length: {len(responses[model])}")
     
     logger.info("All responses collected")
-    best_model, grades, reasons, judge_summary = await asyncio.to_thread(triage_responses, prompt, responses)
+    best_model, grades, reasons, judge_summary = await asyncio.to_thread(triage_responses, prompt, responses, judge_model)
     
     result = {
         "prompt": prompt,
@@ -229,7 +223,7 @@ async def ask(request: AskRequest):
         "grades": grades,
         "reasons": reasons,
         "judge_summary": judge_summary,
-        "judge": "gpt-5.2-chat",
+        "judge": judge_model,
         "responses": responses,
         "best_answer": responses[best_model]
     }
@@ -252,19 +246,26 @@ async def api_llm_stream(request: AskRequest):
 
     async def event_stream():
         start = time.time()
-        models = ["gpt-5.2-chat", "phi-4-mini-reasoning", "deepseek-v3.2"]
+        
+        # Randomly pick a judge and exclude from contestants
+        judge_model = random.choice(ALL_MODELS)
+        contestants = [m for m in ALL_MODELS if m != judge_model]
+        logger.info(f"Stream - Judge: {judge_model}, Contestants: {contestants}")
+        
+        # Send judge selection event so frontend knows who's judging
+        yield f"event: judge_selected\ndata: {json.dumps({'judge': judge_model, 'contestants': contestants})}\n\n"
+        
         responses = {}
 
-        # Create async tasks for all models
         async def call_model(model):
             t0 = time.time()
             result = await asyncio.to_thread(query_llm, model, prompt)
             elapsed = round(time.time() - t0, 1)
             return model, result, elapsed
 
-        tasks = [asyncio.create_task(call_model(m)) for m in models]
+        tasks = [asyncio.create_task(call_model(m)) for m in contestants]
 
-        # Yield each model's result as it finishes
+        # Yield each contestant's result as it finishes
         for coro in asyncio.as_completed(tasks):
             model, answer, elapsed = await coro
             responses[model] = answer
@@ -273,7 +274,7 @@ async def api_llm_stream(request: AskRequest):
 
         # Now run the judge
         judge_start = time.time()
-        best_model, grades, reasons, judge_summary = await asyncio.to_thread(triage_responses, prompt, responses)
+        best_model, grades, reasons, judge_summary = await asyncio.to_thread(triage_responses, prompt, responses, judge_model)
         judge_elapsed = round(time.time() - judge_start, 1)
         total_elapsed = round(time.time() - start, 1)
 
@@ -282,7 +283,7 @@ async def api_llm_stream(request: AskRequest):
             "grades": grades,
             "reasons": reasons,
             "judge_summary": judge_summary,
-            "judge": "gpt-5.2-chat",
+            "judge": judge_model,
             "judge_elapsed": judge_elapsed,
             "total_elapsed": total_elapsed,
         })

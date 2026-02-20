@@ -51,12 +51,18 @@ def _get_client(model_name: str):
                 base_url=os.getenv("DEEPSEEK_ENDPOINT"),
                 api_key=os.getenv("DEEPSEEK_KEY"),
             )
+        elif model_name == "kimi-k2-thinking":
+            _clients[model_name] = OpenAI(
+                base_url=os.getenv("KIMI_ENDPOINT"),
+                api_key=os.getenv("KIMI_KEY"),
+            )
     return _clients[model_name]
 
 MODEL_CONFIG = {
     "gpt-5.2-chat": {"deployment": "GPT52_DEPLOYMENT", "default": "gpt-5.2-chat", "max_tokens_key": "max_completion_tokens", "max_tokens": 1024},
     "phi-4-mini-reasoning": {"deployment": "PHI4_DEPLOYMENT", "default": "Phi-4-mini-reasoning", "max_tokens_key": "max_tokens", "max_tokens": 512},
     "deepseek-v3.2": {"deployment": "DEEPSEEK_DEPLOYMENT", "default": "DeepSeek-V3.2", "max_tokens_key": "max_tokens", "max_tokens": 1024},
+    "kimi-k2-thinking": {"deployment": "KIMI_DEPLOYMENT", "default": "Kimi-K2-Thinking", "max_tokens_key": "max_tokens", "max_tokens": 1024},
 }
 
 # Serve React app for root route first
@@ -80,7 +86,8 @@ def health_check():
     return {"status": "healthy", "environment_variables": {
         "GPT52_ENDPOINT": bool(os.getenv("GPT52_ENDPOINT")),
         "PHI4_ENDPOINT": bool(os.getenv("PHI4_ENDPOINT")),
-        "DEEPSEEK_ENDPOINT": bool(os.getenv("DEEPSEEK_ENDPOINT"))
+        "DEEPSEEK_ENDPOINT": bool(os.getenv("DEEPSEEK_ENDPOINT")),
+        "KIMI_ENDPOINT": bool(os.getenv("KIMI_ENDPOINT"))
     }}
 
 
@@ -108,7 +115,7 @@ def query_llm(model_name: str, prompt: str) -> str:
         logger.error(f"{model_name} API error: {type(e).__name__}: {str(e)}")
         return f"{model_name} API error: {type(e).__name__}: {str(e)}"
 
-ALL_MODELS = ["gpt-5.2-chat", "phi-4-mini-reasoning", "deepseek-v3.2"]
+ALL_MODELS = ["gpt-5.2-chat", "phi-4-mini-reasoning", "deepseek-v3.2", "kimi-k2-thinking"]
 
 def triage_responses(prompt: str, responses: dict, judge_model: str) -> tuple:
     """Use a randomly selected LLM as judge to evaluate contestant responses."""
@@ -148,20 +155,31 @@ Return your evaluation as valid JSON only (no markdown, no code fences), in this
         client = _get_client(judge_model)
         config = MODEL_CONFIG[judge_model]
         deployment = os.getenv(config["deployment"], config["default"])
+        # Give judge more tokens (reasoning models need room to think + produce JSON)
+        judge_max_tokens = max(config["max_tokens"], 2048)
         kwargs = {
             "messages": [{"role": "user", "content": judge_prompt}],
             "model": deployment,
-            config["max_tokens_key"]: config["max_tokens"],
+            config["max_tokens_key"]: judge_max_tokens,
         }
         response = client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content
         if content:
             content = content.strip()
+            # Strip <think>...</think> blocks (reasoning models)
+            import re
+            content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
+            # Strip markdown code fences
             if content.startswith("```"):
                 content = content.split("\n", 1)[1] if "\n" in content else content[3:]
                 content = content.rsplit("```", 1)[0]
                 content = content.strip()
+            # Try to extract JSON object if surrounded by other text
+            match = re.search(r'\{[\s\S]*\}', content)
+            if match:
+                content = match.group(0)
             
+            logger.info(f"Judge raw (cleaned): {content[:500]}")
             judge_result = json.loads(content)
             evaluations = judge_result.get("evaluations", {})
             grades = {model: eval_data["grade"] for model, eval_data in evaluations.items()}
@@ -206,8 +224,7 @@ async def ask(request: AskRequest):
     
     # Call contestants in parallel
     results = await asyncio.gather(
-        asyncio.to_thread(query_llm, contestants[0], prompt),
-        asyncio.to_thread(query_llm, contestants[1], prompt),
+        *[asyncio.to_thread(query_llm, m, prompt) for m in contestants]
     )
     responses = dict(zip(contestants, results))
     for model in contestants:

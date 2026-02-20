@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 
-const ALL_MODELS = ["gpt-5.2-chat", "phi-4-mini-reasoning", "deepseek-v3.2"];
+const ALL_MODELS = ["gpt-5.2-chat", "phi-4-mini-reasoning", "deepseek-v3.2", "kimi-k2-thinking"];
 
 function App() {
   const [prompt, setPrompt] = useState("");
@@ -143,8 +143,13 @@ function App() {
               );
             })}
           </div>
+          {loading && !judgeData && Object.keys(answers).length < displayModels.length && (
+            <div style={{ fontSize: 13, color: "#888", marginBottom: 12, background: "#f5f5f5", border: "1px solid #e8e8e8", borderRadius: 4, padding: "8px 12px" }}>
+              Evaluation will begin after all contestant models have responded... ({Object.keys(answers).length}/{displayModels.length} received)
+            </div>
+          )}
           {loading && !judgeData && Object.keys(answers).length === displayModels.length && (
-            <div style={{ fontSize: 13, color: "#1890ff", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, color: "#1890ff", marginBottom: 12, background: "#e6f7ff", border: "1px solid #91d5ff", borderRadius: 4, padding: "8px 12px" }}>
               {judgeModel ? `${judgeModel.toUpperCase()} is evaluating responses...` : "Evaluating responses..."}
             </div>
           )}

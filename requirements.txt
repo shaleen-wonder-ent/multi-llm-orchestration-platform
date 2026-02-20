@@ -5,3 +5,5 @@ fastapi
 uvicorn
 debugpy
 agent-dev-cli --pre
+openai
+python-dotenv

@@ -7,8 +7,11 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from openai import AzureOpenAI
+from openai import AzureOpenAI, OpenAI
 from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -42,11 +45,9 @@ def test_endpoint():
 def health_check():
     return {"status": "healthy", "environment_variables": {
         "GPT52_ENDPOINT": bool(os.getenv("GPT52_ENDPOINT")),
-        "PHI4_ENDPOINT": bool(os.getenv("PHI4_ENDPOINT"))
+        "PHI4_ENDPOINT": bool(os.getenv("PHI4_ENDPOINT")),
+        "DEEPSEEK_ENDPOINT": bool(os.getenv("DEEPSEEK_ENDPOINT"))
     }}
-
-# Load environment variables
-load_dotenv()
 
 
 def query_llm(model_name: str, prompt: str) -> str:
@@ -56,11 +57,10 @@ def query_llm(model_name: str, prompt: str) -> str:
     if model_name.lower() == "gpt-5.2-chat":
         endpoint = os.getenv("GPT52_ENDPOINT")
         key = os.getenv("GPT52_KEY")
-        deployment = os.getenv("GPT52_DEPLOYMENT")
-        api_version = os.getenv("GPT52_API_VERSION")
+        deployment = os.getenv("GPT52_DEPLOYMENT", "gpt-5.2-chat")
+        api_version = os.getenv("GPT52_API_VERSION", "2025-04-01-preview")
         
         logger.info(f"GPT-5.2 Config - Endpoint: {endpoint}, Deployment: {deployment}, API Version: {api_version}")
-        logger.info(f"GPT-5.2 Key present: {bool(key)}")
         
         try:
             client = AzureOpenAI(
@@ -68,73 +68,78 @@ def query_llm(model_name: str, prompt: str) -> str:
                 azure_endpoint=endpoint,
                 api_key=key,
             )
-            logger.info("GPT-5.2 client created successfully")
-            
             response = client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
-                max_completion_tokens=1024,  # Increased to allow reasoning + visible output
+                max_completion_tokens=1024,
                 model=deployment
             )
-            logger.info(f"GPT-5.2 response received: {response}")
-            
             content = response.choices[0].message.content
-            logger.info(f"GPT-5.2 content: '{content}'")
-            logger.info(f"GPT-5.2 content length: {len(content) if content else 0}")
-            
             if content is None:
-                logger.warning("GPT-5.2 returned None content")
                 return "GPT-5.2-Chat returned empty response (None)"
-            
             stripped_content = content.strip()
-            logger.info(f"GPT-5.2 stripped content length: {len(stripped_content)}")
-            
             return stripped_content if stripped_content else "GPT-5.2-Chat returned empty content"
             
         except Exception as e:
             logger.error(f"GPT-5.2 API error: {type(e).__name__}: {str(e)}")
-            logger.error(f"GPT-5.2 API error traceback: {traceback.format_exc()}")
             return f"GPT-5.2-Chat API error: {type(e).__name__}: {str(e)}"
+
     elif model_name.lower() == "phi-4-mini-reasoning":
         endpoint = os.getenv("PHI4_ENDPOINT")
         key = os.getenv("PHI4_KEY")
-        deployment = os.getenv("PHI4_DEPLOYMENT")
-        api_version = os.getenv("PHI4_API_VERSION")
+        deployment = os.getenv("PHI4_DEPLOYMENT", "Phi-4-mini-reasoning")
+        api_version = os.getenv("PHI4_API_VERSION", "2024-05-01-preview")
         
-        logger.info(f"PHI-4 Config - Endpoint: {endpoint}, Deployment: {deployment}, API Version: {api_version}")
-        logger.info(f"PHI-4 Key present: {bool(key)}")
+        logger.info(f"PHI-4 Config - Endpoint: {endpoint}, Deployment: {deployment}")
         
         try:
-            client = AzureOpenAI(
-                api_version=api_version,
-                azure_endpoint=endpoint,
+            # Azure AI model inference (serverless) uses OpenAI client with base_url
+            client = OpenAI(
+                base_url=endpoint,
                 api_key=key,
             )
-            logger.info("PHI-4 client created successfully")
-            
             response = client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
-                max_completion_tokens=512,  # Standardized parameter name
+                max_tokens=512,
                 model=deployment
             )
-            logger.info(f"PHI-4 response received: {response}")
-            
             content = response.choices[0].message.content
-            logger.info(f"PHI-4 content: '{content}'")
-            logger.info(f"PHI-4 content length: {len(content) if content else 0}")
-            
             if content is None:
-                logger.warning("PHI-4 returned None content")
                 return "Phi-4-mini-reasoning returned empty response (None)"
-                
             stripped_content = content.strip()
-            logger.info(f"PHI-4 stripped content length: {len(stripped_content)}")
-            
             return stripped_content if stripped_content else "Phi-4-mini-reasoning returned empty content"
-            
+                
         except Exception as e:
             logger.error(f"PHI-4 API error: {type(e).__name__}: {str(e)}")
-            logger.error(f"PHI-4 API error traceback: {traceback.format_exc()}")
             return f"Phi-4-mini-reasoning API error: {type(e).__name__}: {str(e)}"
+
+    elif model_name.lower() == "deepseek-v3.2":
+        endpoint = os.getenv("DEEPSEEK_ENDPOINT")
+        key = os.getenv("DEEPSEEK_KEY")
+        deployment = os.getenv("DEEPSEEK_DEPLOYMENT", "DeepSeek-V3.2")
+        api_version = os.getenv("DEEPSEEK_API_VERSION", "2024-05-01-preview")
+        
+        logger.info(f"DeepSeek Config - Endpoint: {endpoint}, Deployment: {deployment}")
+        
+        try:
+            client = OpenAI(
+                base_url=endpoint,
+                api_key=key,
+            )
+            response = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1024,
+                model=deployment
+            )
+            content = response.choices[0].message.content
+            if content is None:
+                return "DeepSeek-V3.2 returned empty response (None)"
+            stripped_content = content.strip()
+            return stripped_content if stripped_content else "DeepSeek-V3.2 returned empty content"
+                
+        except Exception as e:
+            logger.error(f"DeepSeek API error: {type(e).__name__}: {str(e)}")
+            return f"DeepSeek-V3.2 API error: {type(e).__name__}: {str(e)}"
+
     else:
         return f"Model {model_name} not supported."
 
@@ -169,7 +174,7 @@ async def ask(request: AskRequest):
     
     logger.info(f"Processing request with prompt: {prompt[:100]}..." if len(prompt) > 100 else f"Processing request with prompt: {prompt}")
     
-    models = ["gpt-5.2-chat", "phi-4-mini-reasoning"]
+    models = ["gpt-5.2-chat", "phi-4-mini-reasoning", "deepseek-v3.2"]
     responses = {}
     
     for model in models:
@@ -198,21 +203,6 @@ async def ask(request: AskRequest):
 async def api_llm(request: AskRequest):
     logger.info("API /api/llm endpoint called")
     return await ask(request)
-
-# Test endpoints
-@app.get("/test")
-def test_endpoint():
-    return {"status": "OK", "message": "Test endpoint working"}
-
-@app.post("/health")
-def health_check():
-    return {
-        "status": "healthy",
-        "environment_variables": {
-            "GPT52_ENDPOINT": bool(os.getenv("GPT52_ENDPOINT")),
-            "PHI4_ENDPOINT": bool(os.getenv("PHI4_ENDPOINT"))
-        }
-    }
 
 # TODO: Add tracing/debugging instrumentation
 # TODO: Integrate with agentdev and VSCode debugging

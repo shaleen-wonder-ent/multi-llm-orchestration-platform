@@ -1,30 +1,70 @@
 import React, { useState } from "react";
 
+const ALL_MODELS = ["gpt-5.2-chat", "phi-4-mini-reasoning", "deepseek-v3.2"];
+
 function App() {
   const [prompt, setPrompt] = useState("");
-  const [responses, setResponses] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [judgeData, setJudgeData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [pendingModels, setPendingModels] = useState([]);
   const [error, setError] = useState("");
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError("");
-    setResponses(null);
+    setAnswers({});
+    setJudgeData(null);
+    setPendingModels([...ALL_MODELS]);
+
     try {
-      const res = await fetch("/api/llm", {
+      const res = await fetch("/api/llm/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
       });
       if (!res.ok) throw new Error("Server error");
-      const data = await res.json();
-      setResponses(data);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse SSE events from buffer
+        const lines = buffer.split("\n");
+        buffer = "";
+        let eventType = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            const data = JSON.parse(line.slice(6));
+            if (eventType === "model_result") {
+              setAnswers(prev => ({ ...prev, [data.model]: { answer: data.answer, elapsed: data.elapsed } }));
+              setPendingModels(prev => prev.filter(m => m !== data.model));
+            } else if (eventType === "judge_result") {
+              setJudgeData(data);
+            }
+            eventType = "";
+          } else if (line.trim() === "") {
+            // empty line between events
+          } else {
+            buffer += line + "\n";
+          }
+        }
+      }
     } catch (err) {
       setError("Failed to get response. " + err.message);
     }
     setLoading(false);
   };
+
+  const hasAnswers = Object.keys(answers).length > 0;
 
   return (
     <div style={{ maxWidth: 1100, margin: "40px auto", padding: 24, borderRadius: 8, boxShadow: "0 2px 8px #ddd", color: "#213547", background: "#fff" }}>
@@ -44,42 +84,68 @@ function App() {
         </button>
       </form>
       {error && <div style={{ color: "red", marginBottom: 16 }}>{error}</div>}
-      {responses && (
+      {(hasAnswers || loading) && (
         <div>
           <h3>LLM Answers</h3>
           <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
-            {Object.entries(responses.answers).map(([model, ans]) => (
-              <div key={model} style={{
-                flex: 1,
-                background: responses.best === model ? "#fffbe6" : "#e6f7ff",
-                color: "#213547",
-                padding: 12,
-                borderRadius: 4,
-                border: responses.best === model ? "2px solid #faad14" : "1px solid #91d5ff",
-                whiteSpace: "pre-wrap"
-              }}>
-                <strong style={{ fontSize: 16 }}>{model.toUpperCase()}</strong>
-                <div style={{ fontSize: 13, margin: "4px 0 8px 0" }}>
-                  Grade: <b>{responses.grades[model]}/10</b> {responses.best === model && <span style={{ color: "#faad14" }}>(Best)</span>}
+            {ALL_MODELS.map(model => {
+              const data = answers[model];
+              const isPending = pendingModels.includes(model);
+              const isBest = judgeData && judgeData.best === model;
+              return (
+                <div key={model} style={{
+                  flex: 1,
+                  background: isBest ? "#fffbe6" : isPending ? "#f9f9f9" : "#e6f7ff",
+                  color: "#213547",
+                  padding: 12,
+                  borderRadius: 4,
+                  border: isBest ? "2px solid #faad14" : "1px solid #d9d9d9",
+                  whiteSpace: "pre-wrap",
+                  opacity: isPending ? 0.6 : 1,
+                  transition: "all 0.3s ease",
+                }}>
+                  <strong style={{ fontSize: 16 }}>{model.toUpperCase()}</strong>
+                  {isPending && (
+                    <div style={{ fontSize: 13, color: "#999", margin: "8px 0" }}>Waiting for response...</div>
+                  )}
+                  {data && (
+                    <>
+                      <div style={{ fontSize: 11, color: "#888", margin: "2px 0 4px 0" }}>
+                        Responded in {data.elapsed}s
+                      </div>
+                      {judgeData && judgeData.grades[model] !== undefined && (
+                        <div style={{ fontSize: 13, margin: "4px 0 8px 0" }}>
+                          Grade: <b>{judgeData.grades[model]}/10</b> {isBest && <span style={{ color: "#faad14" }}>(Best)</span>}
+                        </div>
+                      )}
+                      {judgeData && judgeData.reasons && judgeData.reasons[model] && (
+                        <div style={{ fontSize: 12, color: "#555", background: "#f5f5f5", padding: "6px 8px", borderRadius: 4, marginBottom: 8, fontStyle: "italic" }}>
+                          Judge: {judgeData.reasons[model]}
+                        </div>
+                      )}
+                      {formatLLMAnswer(data.answer)}
+                    </>
+                  )}
                 </div>
-                {responses.reasons && responses.reasons[model] && (
-                  <div style={{ fontSize: 12, color: "#555", background: "#f5f5f5", padding: "6px 8px", borderRadius: 4, marginBottom: 8, fontStyle: "italic" }}>
-                    Judge: {responses.reasons[model]}
-                  </div>
-                )}
-                {formatLLMAnswer(ans)}
-              </div>
-            ))}
+              );
+            })}
           </div>
-          {responses.judge_summary && (
+          {loading && !judgeData && Object.keys(answers).length === ALL_MODELS.length && (
+            <div style={{ fontSize: 13, color: "#1890ff", marginBottom: 12 }}>Evaluating responses with GPT-5.2 judge...</div>
+          )}
+          {judgeData && judgeData.judge_summary && (
             <div style={{ background: "#f0f9ff", border: "1px solid #91d5ff", borderRadius: 4, padding: "10px 14px", marginBottom: 12, color: "#213547" }}>
-              <strong style={{ fontSize: 13 }}>Judge ({responses.judge || "GPT-5.2"}):</strong>
-              <span style={{ fontSize: 13, marginLeft: 6 }}>{responses.judge_summary}</span>
+              <strong style={{ fontSize: 13 }}>Judge ({judgeData.judge || "GPT-5.2"}):</strong>
+              <span style={{ fontSize: 13, marginLeft: 6 }}>{judgeData.judge_summary}</span>
+              <span style={{ fontSize: 11, color: "#888", marginLeft: 8 }}>({judgeData.judge_elapsed}s)</span>
             </div>
           )}
-          <div style={{ fontWeight: 500, color: "#52c41a" }}>
-            Best LLM: {responses.best.toUpperCase()}
-          </div>
+          {judgeData && (
+            <div style={{ fontWeight: 500, color: "#52c41a" }}>
+              Best LLM: {judgeData.best.toUpperCase()}
+              <span style={{ fontSize: 12, color: "#888", fontWeight: 400, marginLeft: 8 }}>Total: {judgeData.total_elapsed}s</span>
+            </div>
+          )}
         </div>
       )}
     </div>

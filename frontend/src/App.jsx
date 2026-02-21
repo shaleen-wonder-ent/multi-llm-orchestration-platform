@@ -169,6 +169,11 @@ function ChatMessage({ msg }) {
         <div style={{ background: c.bg, border: `1px solid ${c.border}`, borderRadius: "4px 18px 18px 18px",
           padding: "12px 16px", maxWidth: "75%", fontSize: 14, lineHeight: 1.6, color: "#213547" }}>
           {formatAnswer(answer)}
+          {msg.backgroundLoading && (
+            <div style={{ marginTop: 6, fontSize: 11, color: "#aaa" }}>
+              ⏳ Evaluating in background...
+            </div>
+          )}
           {grade !== undefined && (
             <div style={{ marginTop: 8, fontSize: 11, color: "#888" }}>
               Judge score this round: <strong>{grade}/10</strong>
@@ -376,6 +381,16 @@ export default function App() {
       const decoder = new TextDecoder();
       let buffer = "";
 
+      // Update the last assistant bubble mid-stream
+      const updateBubble = (updates) => {
+        setChatMessages(prev => {
+          const updated = [...prev];
+          const idx = [...updated].map((m, i) => ({ m, i })).reverse().find(({ m }) => m.role === "assistant")?.i;
+          if (idx !== undefined) updated[idx] = { ...updated[idx], ...updates };
+          return updated;
+        });
+      };
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -393,20 +408,26 @@ export default function App() {
           if (!dataLine) continue;
           let data;
           try { data = JSON.parse(dataLine); } catch { continue; }
-          if (eventType === "judge_result") {
-            judgeResult = data;
-            setCumScores(data.cumulative_scores || {});
-          } else if (eventType === "background_result") {
-            backgroundResults[data.model] = { answer: data.answer, elapsed: data.elapsed, grade: data.grade };
-          } else if (eventType === "shown_answer") {
+          if (eventType === "shown_answer") {
             shownAnswer = data.answer;
             shownElapsed = data.elapsed;
+            // Show answer immediately — background evaluation still running
+            updateBubble({ answer: data.answer, loading: false, backgroundLoading: true });
+          } else if (eventType === "judge_result") {
+            judgeResult = data;
+            setCumScores(data.cumulative_scores || {});
+            updateBubble({ grade: data.grades?.[chosenModel], judgeData: data, backgroundLoading: false });
+          } else if (eventType === "background_result") {
+            backgroundResults[data.model] = { answer: data.answer, elapsed: data.elapsed, grade: data.grade };
+            updateBubble({ backgroundResults: { ...backgroundResults } });
           } else if (eventType === "switch_hint") {
             switchHintData = data;
+            updateBubble({ switchHint: data });
           } else if (eventType === "locked_in") {
             lockedInData = data;
             setLockedModel(data.model);
             setChosenModel(data.model);
+            updateBubble({ lockedIn: data });
           } else if (eventType === "session") {
             setRecursionCount(data.recursion_count);
           }
@@ -416,28 +437,17 @@ export default function App() {
       setError("Chat error: " + err.message);
     }
 
-    const finalAnswer = shownAnswer || `[No response from ${chosenModel}]`;
+    // Fallback: clear loading state if shown_answer was never received
+    if (!shownAnswer) {
+      setChatMessages(prev => {
+        const updated = [...prev];
+        const idx = [...updated].map((m, i) => ({ m, i })).reverse().find(({ m }) => m.role === "assistant" && m.loading)?.i;
+        if (idx !== undefined) updated[idx] = { ...updated[idx], answer: `[No response from ${chosenModel}]`, loading: false };
+        return updated;
+      });
+    }
 
-    // Update the placeholder bubble
-    setChatMessages(prev => {
-      const updated = [...prev];
-      // find last loading assistant bubble
-      const idx = updated.map((m, i) => ({ m, i })).reverse().find(({ m }) => m.role === "assistant" && m.loading)?.i;
-      if (idx !== undefined) {
-        updated[idx] = {
-          role: "assistant",
-          model: chosenModel,
-          answer: finalAnswer,
-          grade: judgeResult?.grades?.[chosenModel],
-          judgeData: judgeResult,
-          backgroundResults,
-          switchHint: switchHintData,
-          lockedIn: lockedInData,
-          loading: false,
-        };
-      }
-      return updated;
-    });
+    const finalAnswer = shownAnswer || `[No response from ${chosenModel}]`;
 
     // Append to LLM history
     setChatHistory(prev => [

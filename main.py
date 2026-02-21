@@ -163,7 +163,7 @@ Return ONLY valid JSON (no markdown, no code fences):
 
     config = MODEL_CONFIG[judge_model]
     deployment = os.getenv(config["deployment"], config["default"])
-    judge_max = max(config["max_tokens"], 2048)
+    judge_max = max(config["max_tokens"], 1024)
     try:
         client = _get_client(judge_model)
         kwargs = {
@@ -308,17 +308,33 @@ async def chat_stream(req: ChatRequest):
 
         async def call_model(model: str):
             t0 = time.time()
-            answer = await asyncio.to_thread(query_llm, model, prompt, history)
+            try:
+                answer = await asyncio.wait_for(
+                    asyncio.to_thread(query_llm, model, prompt, history),
+                    timeout=45.0
+                )
+            except asyncio.TimeoutError:
+                answer = f"[{model} timed out after 45s]"
             return model, answer, round(time.time() - t0, 1)
 
-        tasks = [asyncio.create_task(call_model(m)) for m in contestants]
-
-        for coro in asyncio.as_completed(tasks):
-            model, answer, elapsed = await coro
-            responses[model] = answer
-            elapsed_map[model] = elapsed
-            if mode == "tournament":
+        if mode == "tournament":
+            tasks = [asyncio.create_task(call_model(m)) for m in contestants]
+            for coro in asyncio.as_completed(tasks):
+                model, answer, elapsed = await coro
+                responses[model] = answer
+                elapsed_map[model] = elapsed
                 yield f"event: model_result\ndata: {json.dumps({'model': model, 'answer': answer, 'elapsed': elapsed})}\n\n"
+        else:
+            # Chat mode: yield chosen model's answer immediately, then run background models
+            c_model, c_answer, c_elapsed = await call_model(chosen)
+            responses[c_model] = c_answer
+            elapsed_map[c_model] = c_elapsed
+            yield f"event: shown_answer\ndata: {json.dumps({'model': chosen, 'answer': c_answer, 'elapsed': c_elapsed})}\n\n"
+            bg_tasks = [asyncio.create_task(call_model(m)) for m in ALL_MODELS if m != chosen]
+            for coro in asyncio.as_completed(bg_tasks):
+                model, answer, elapsed = await coro
+                responses[model] = answer
+                elapsed_map[model] = elapsed
 
         judge_start = time.time()
         best_model, grades, reasons, summary = await asyncio.to_thread(
@@ -335,9 +351,7 @@ async def chat_stream(req: ChatRequest):
             for model, answer in responses.items():
                 yield f"event: background_result\ndata: {json.dumps({'model': model, 'answer': answer, 'elapsed': elapsed_map[model], 'grade': grades.get(model)})}\n\n"
 
-            shown = responses.get(chosen, f"[{chosen} did not respond]")
-            yield f"event: shown_answer\ndata: {json.dumps({'model': chosen, 'answer': shown, 'elapsed': elapsed_map.get(chosen, 0)})}\n\n"
-
+            # shown_answer was already emitted before judge ran
             chosen_grade = grades.get(chosen, 0)
             better_candidates = {
                 m: g for m, g in grades.items()

@@ -51,8 +51,8 @@ def _get_client(model_name: str):
             )
         elif model_name == "deepseek-v3.2":
             _clients[model_name] = OpenAI(
-                base_url=os.getenv("DEEPSEEK_API_URL"),
-                api_key=os.getenv("DEEPSEEK_API_KEY"),
+                base_url=os.getenv("DEEPSEEK_ENDPOINT"),
+                api_key=os.getenv("DEEPSEEK_KEY"),
             )
     return _clients.get(model_name)
 
@@ -70,7 +70,7 @@ MODEL_CONFIG = {
         "max_tokens": 512,
     },
     "deepseek-v3.2": {
-        "deployment": "DEEPSEEK_MODEL",
+        "deployment": "DEEPSEEK_DEPLOYMENT",
         "default": "DeepSeek-V3.2",
         "max_tokens_key": "max_tokens",
         "max_tokens": 1024,

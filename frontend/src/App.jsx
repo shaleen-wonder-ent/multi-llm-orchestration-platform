@@ -259,35 +259,36 @@ export default function App() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let eventType = "";
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = "";
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            eventType = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
-            const data = JSON.parse(line.slice(6));
-            if (eventType === "session") {
-              setSessionId(data.session_id);
-            } else if (eventType === "judge_selected") {
-              setTournamentJudgeModel(data.judge);
-              setTournamentPending(data.contestants);
-              setMode("tournament");
-            } else if (eventType === "model_result") {
-              setTournamentAnswers(prev => ({ ...prev, [data.model]: { answer: data.answer, elapsed: data.elapsed } }));
-              setTournamentPending(prev => prev.filter(m => m !== data.model));
-            } else if (eventType === "judge_result") {
-              setTournamentJudgeData(data);
-              setCumScores(data.cumulative_scores || {});
-            }
-            eventType = "";
-          } else if (line.trim() !== "") {
-            buffer += line + "\n";
+        // Only process complete SSE events (terminated by \n\n)
+        const events = buffer.split("\n\n");
+        buffer = events.pop(); // last element is incomplete — keep in buffer
+        for (const event of events) {
+          let eventType = "";
+          let dataLine = "";
+          for (const line of event.split("\n")) {
+            if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+            else if (line.startsWith("data: ")) dataLine = line.slice(6);
+          }
+          if (!dataLine) continue;
+          let data;
+          try { data = JSON.parse(dataLine); } catch { continue; }
+          if (eventType === "session") {
+            setSessionId(data.session_id);
+          } else if (eventType === "judge_selected") {
+            setTournamentJudgeModel(data.judge);
+            setTournamentPending(data.contestants);
+            setMode("tournament");
+          } else if (eventType === "model_result") {
+            setTournamentAnswers(prev => ({ ...prev, [data.model]: { answer: data.answer, elapsed: data.elapsed } }));
+            setTournamentPending(prev => prev.filter(m => m !== data.model));
+          } else if (eventType === "judge_result") {
+            setTournamentJudgeData(data);
+            setCumScores(data.cumulative_scores || {});
           }
         }
       }
@@ -374,39 +375,40 @@ export default function App() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-      let eventType = "";
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = "";
-        for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            eventType = line.slice(7).trim();
-          } else if (line.startsWith("data: ")) {
-            const data = JSON.parse(line.slice(6));
-            if (eventType === "judge_result") {
-              judgeResult = data;
-              setCumScores(data.cumulative_scores || {});
-            } else if (eventType === "background_result") {
-              backgroundResults[data.model] = { answer: data.answer, elapsed: data.elapsed, grade: data.grade };
-            } else if (eventType === "shown_answer") {
-              shownAnswer = data.answer;
-              shownElapsed = data.elapsed;
-            } else if (eventType === "switch_hint") {
-              switchHintData = data;
-            } else if (eventType === "locked_in") {
-              lockedInData = data;
-              setLockedModel(data.model);
-              setChosenModel(data.model);
-            } else if (eventType === "session") {
-              setRecursionCount(data.recursion_count);
-            }
-            eventType = "";
-          } else if (line.trim() !== "") {
-            buffer += line + "\n";
+        // Only process complete SSE events (terminated by \n\n)
+        const events = buffer.split("\n\n");
+        buffer = events.pop(); // last element is incomplete — keep in buffer
+        for (const event of events) {
+          let eventType = "";
+          let dataLine = "";
+          for (const line of event.split("\n")) {
+            if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+            else if (line.startsWith("data: ")) dataLine = line.slice(6);
+          }
+          if (!dataLine) continue;
+          let data;
+          try { data = JSON.parse(dataLine); } catch { continue; }
+          if (eventType === "judge_result") {
+            judgeResult = data;
+            setCumScores(data.cumulative_scores || {});
+          } else if (eventType === "background_result") {
+            backgroundResults[data.model] = { answer: data.answer, elapsed: data.elapsed, grade: data.grade };
+          } else if (eventType === "shown_answer") {
+            shownAnswer = data.answer;
+            shownElapsed = data.elapsed;
+          } else if (eventType === "switch_hint") {
+            switchHintData = data;
+          } else if (eventType === "locked_in") {
+            lockedInData = data;
+            setLockedModel(data.model);
+            setChosenModel(data.model);
+          } else if (eventType === "session") {
+            setRecursionCount(data.recursion_count);
           }
         }
       }

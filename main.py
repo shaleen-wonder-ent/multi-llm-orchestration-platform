@@ -67,7 +67,7 @@ MODEL_CONFIG = {
         "deployment": "PHI4_DEPLOYMENT",
         "default": "phi-4-mini-reasoning",
         "max_tokens_key": "max_tokens",
-        "max_tokens": 512,
+        "max_tokens": 2048,
     },
     "deepseek-v3.2": {
         "deployment": "DEEPSEEK_DEPLOYMENT",
@@ -78,6 +78,10 @@ MODEL_CONFIG = {
 }
 
 ALL_MODELS = list(MODEL_CONFIG.keys())
+# Reasoning models (phi-4) exhaust token budgets with <think> blocks and
+# never emit the closing </think>, making JSON parsing fail. Only use
+# non-reasoning models as judge.
+JUDGE_MODELS = [m for m in ALL_MODELS if "reasoning" not in m]
 MAX_RECURSIONS = 3  # background comparison rounds before lock-in
 
 
@@ -108,12 +112,27 @@ def _get_or_create_session(session_id: Optional[str]):
 # 
 #  Core LLM call
 # 
+# System prompt injected for reasoning models to ensure they emit a final answer
+_REASONING_SYSTEM_MSG = {
+    "role": "system",
+    "content": (
+        "You are a helpful assistant. Keep your thinking brief. "
+        "After </think>, you MUST write a concise answer of 2-4 sentences. "
+        "Never end your response inside the <think> block."
+    ),
+}
+
+
 def query_llm(model_name: str, prompt: str, history: list | None = None) -> str:
     config = MODEL_CONFIG.get(model_name.lower())
     if not config:
         return f"[Model {model_name} not supported]"
     deployment = os.getenv(config["deployment"], config["default"])
     messages = list(history) if history else []
+    # Reasoning models sometimes emit only a <think> block with no trailing answer.
+    # Prepend a system message (if not already present) to enforce a final answer.
+    if "reasoning" in model_name.lower() and (not messages or messages[0].get("role") != "system"):
+        messages = [_REASONING_SYSTEM_MSG] + messages
     messages.append({"role": "user", "content": prompt})
     try:
         client = _get_client(model_name.lower())
@@ -128,7 +147,10 @@ def query_llm(model_name: str, prompt: str, history: list | None = None) -> str:
         content = response.choices[0].message.content
         if not content:
             return f"[{model_name} returned empty response]"
-        content = re.sub(r"<think>[\s\S]*?</think>", "", content).strip()
+        content = re.sub(r"<think>[\s\S]*?</think>", "", content)  # closed think block
+        content = re.sub(r"<think>[\s\S]*$", "", content)          # truncated (no closing tag)
+        content = content.strip()
+        logger.info(f"{model_name} response (finish={response.choices[0].finish_reason}): {repr(content[:120])}")
         return content or f"[{model_name} returned empty after stripping reasoning]"
     except Exception as e:
         logger.error(f"{model_name} error: {e}")
@@ -163,7 +185,7 @@ Return ONLY valid JSON (no markdown, no code fences):
 
     config = MODEL_CONFIG[judge_model]
     deployment = os.getenv(config["deployment"], config["default"])
-    judge_max = max(config["max_tokens"], 1024)
+    judge_max = max(config["max_tokens"], 2048)
     try:
         client = _get_client(judge_model)
         kwargs = {
@@ -172,7 +194,9 @@ Return ONLY valid JSON (no markdown, no code fences):
             config["max_tokens_key"]: judge_max,
         }
         raw = client.chat.completions.create(**kwargs).choices[0].message.content or ""
-        raw = re.sub(r"<think>[\s\S]*?</think>", "", raw).strip()
+        raw = re.sub(r"<think>[\s\S]*?</think>", "", raw)  # closed think block
+        raw = re.sub(r"<think>[\s\S]*$", "", raw)          # truncated (no closing tag)
+        raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
             raw = raw.rsplit("```", 1)[0].strip()
@@ -294,11 +318,12 @@ async def chat_stream(req: ChatRequest):
         yield f"event: session\ndata: {json.dumps({'session_id': session_id, 'mode': mode, 'chosen_model': chosen, 'recursion_count': recursion_count, 'locked': locked, 'max_recursions': MAX_RECURSIONS})}\n\n"
 
         if mode == "tournament":
-            judge_model = random.choice(ALL_MODELS)
+            judge_model = random.choice(JUDGE_MODELS)
             contestants = ALL_MODELS
         else:
-            non_chosen = [m for m in ALL_MODELS if m != chosen]
-            judge_model = random.choice(non_chosen)
+            non_chosen = [m for m in JUDGE_MODELS if m != chosen]
+            # fallback: if chosen is the only non-reasoning option, pick any judge
+            judge_model = random.choice(non_chosen) if non_chosen else random.choice(JUDGE_MODELS)
             contestants = ALL_MODELS
 
         yield f"event: judge_selected\ndata: {json.dumps({'judge': judge_model, 'contestants': contestants, 'mode': mode})}\n\n"
@@ -311,10 +336,10 @@ async def chat_stream(req: ChatRequest):
             try:
                 answer = await asyncio.wait_for(
                     asyncio.to_thread(query_llm, model, prompt, history),
-                    timeout=45.0
+                    timeout=90.0
                 )
             except asyncio.TimeoutError:
-                answer = f"[{model} timed out after 45s]"
+                answer = f"[{model} timed out after 90s]"
             return model, answer, round(time.time() - t0, 1)
 
         if mode == "tournament":
